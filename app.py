@@ -143,7 +143,7 @@ def oauth2callback():
     # ユーザー情報の取得
     # ユーザーIDを固定値にしておきます
     # 本番環境では適切な方法でユーザーIDを取得する必要があります
-    user_id = "user123"  # デモ用に固定値を使用
+    user_id = "Ud4cc4c3b7e9ec9875f9951d1d0352a7a"  # デモ用に固定値を使用
     
     # 認証情報をJSONに変換
     credentials_json = {
