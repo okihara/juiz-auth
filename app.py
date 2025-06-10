@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+import logging
 from flask import Flask, request, redirect, url_for, session, jsonify
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -15,8 +16,27 @@ os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 # 環境変数の読み込み
 load_dotenv()
 
+# ログ設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 必須環境変数の検証
+required_env_vars = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'DATABASE_URL', 'SECRET_KEY']
+missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+if missing_vars:
+    raise EnvironmentError(f"Missing required environment variables: {missing_vars}")
+
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY')
+
+# セキュリティヘッダーの追加
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    return response
 
 # Google OAuth設定
 CLIENT_CONFIG = {
@@ -34,33 +54,42 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
 # PostgreSQLへの接続
 def get_db_connection():
-    conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-    conn.autocommit = True
-    return conn
+    try:
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        conn.autocommit = True
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Database connection failed: {e}")
+        raise
 
 # データベースの初期化
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # credentialsテーブルが存在しない場合は作成
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS credentials (
-        id SERIAL PRIMARY KEY,
-        user_id VARCHAR(255) NOT NULL UNIQUE,
-        token_json TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # インデックスの作成
-    cursor.execute('''
-    CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)
-    ''')
-    
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # credentialsテーブルが存在しない場合は作成
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS credentials (
+            id SERIAL PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL UNIQUE,
+            token_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        
+        # インデックスの作成
+        cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)
+        ''')
+        
+        cursor.close()
+        conn.close()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        raise
 
 # データベース初期化フラグ
 db_initialized = False
@@ -133,16 +162,15 @@ def oauth2callback():
     
     # 認証情報の取得
     credentials = flow.credentials
-    print(f"Credentials obtained: {credentials.valid}")
-    print(f"Token: {credentials.token[:10]}...")
-    print(f"Has refresh token: {bool(credentials.refresh_token)}")
-    print(f"Scopes: {credentials.scopes}")
-    print(f"Expiry: {credentials.expiry}")
+    logger.info(f"Credentials obtained: {credentials.valid}")
+    logger.info(f"Has refresh token: {bool(credentials.refresh_token)}")
+    logger.info(f"Scopes: {credentials.scopes}")
     
     
     # ユーザー情報の取得
-    # ユーザーIDを固定値にしておきます
-    # 本番環境では適切な方法でユーザーIDを取得する必要があります
+    # 警告: セキュリティ上の問題 - 固定ユーザーIDを使用
+    # 本番環境では適切なユーザー認証システムを実装する必要があります
+    # TODO: 実際のユーザー認証システムと連携してuser_idを動的に取得
     user_id = "Ud4cc4c3b7e9ec9875f9951d1d0352a7a"  # デモ用に固定値を使用
     
     # 認証情報をJSONに変換
@@ -156,21 +184,26 @@ def oauth2callback():
     }
     
     # データベースに保存
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # UPSERTクエリ（存在すれば更新、なければ挿入）
-    cursor.execute('''
-    INSERT INTO credentials (user_id, token_json)
-    VALUES (%s, %s)
-    ON CONFLICT (user_id) 
-    DO UPDATE SET 
-        token_json = %s,
-        updated_at = CURRENT_TIMESTAMP
-    ''', (user_id, json.dumps(credentials_json), json.dumps(credentials_json)))
-    
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # UPSERTクエリ（存在すれば更新、なければ挿入）
+        cursor.execute('''
+        INSERT INTO credentials (user_id, token_json)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) 
+        DO UPDATE SET 
+            token_json = %s,
+            updated_at = CURRENT_TIMESTAMP
+        ''', (user_id, json.dumps(credentials_json), json.dumps(credentials_json)))
+        
+        cursor.close()
+        conn.close()
+        logger.info(f"Credentials saved successfully for user: {user_id[:8]}...")
+    except Exception as e:
+        logger.error(f"Failed to save credentials: {e}")
+        return f"<h1>エラー</h1><p>認証情報の保存に失敗しました。</p><a href='/'>戻る</a>"
     
     return '''
     <h1>認証成功</h1>
@@ -181,61 +214,76 @@ def oauth2callback():
 # カレンダー情報の取得と表示
 @app.route('/calendar')
 def get_calendar():
-    # ユーザーIDの取得（本来はセッションや認証から取得）
-    # デモ用に簡易実装
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # 最新の認証情報を取得
-    cursor.execute('SELECT user_id, token_json FROM credentials ORDER BY updated_at DESC LIMIT 1')
-    result = cursor.fetchone()
-    
-    if not result:
+    try:
+        # ユーザーIDの取得（本来はセッションや認証から取得）
+        # デモ用に簡易実装
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 最新の認証情報を取得
+        cursor.execute('SELECT user_id, token_json FROM credentials ORDER BY updated_at DESC LIMIT 1')
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return '認証情報がありません。<a href="/authorize">認証する</a>'
+        
+        user_id, token_json = result
+        credentials_dict = json.loads(token_json)
+        
+        # 認証情報の復元
+        credentials = Credentials(
+            token=credentials_dict['token'],
+            refresh_token=credentials_dict['refresh_token'],
+            token_uri=credentials_dict['token_uri'],
+            client_id=credentials_dict['client_id'],
+            client_secret=credentials_dict['client_secret'],
+            scopes=credentials_dict['scopes']
+        )
+        
         cursor.close()
         conn.close()
-        return '認証情報がありません。<a href="/authorize">認証する</a>'
-    
-    user_id, token_json = result
-    credentials_dict = json.loads(token_json)
-    
-    # 認証情報の復元
-    credentials = Credentials(
-        token=credentials_dict['token'],
-        refresh_token=credentials_dict['refresh_token'],
-        token_uri=credentials_dict['token_uri'],
-        client_id=credentials_dict['client_id'],
-        client_secret=credentials_dict['client_secret'],
-        scopes=credentials_dict['scopes']
-    )
-    
-    cursor.close()
-    conn.close()
-    
-    # Google Calendar APIの呼び出し
-    service = build('calendar', 'v3', credentials=credentials)
-    
-    # カレンダーイベントの取得
-    now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' は UTC
-    events_result = service.events().list(
-        calendarId='primary',
-        timeMin=now,
-        maxResults=10,
-        singleEvents=True,
-        orderBy='startTime'
-    ).execute()
-    events = events_result.get('items', [])
-    
-    if not events:
-        return '<h1>今後の予定はありません</h1>'
-    
-    # イベント一覧の表示
-    output = '<h1>今後の予定</h1><ul>'
-    for event in events:
-        start = event['start'].get('dateTime', event['start'].get('date'))
-        output += f'<li>{start} - {event["summary"]}</li>'
-    output += '</ul>'
-    
-    return output
+        
+        # Google Calendar APIの呼び出し
+        service = build('calendar', 'v3', credentials=credentials)
+        
+        # カレンダーイベントの取得
+        now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' は UTC
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=now,
+            maxResults=10,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        events = events_result.get('items', [])
+        
+        if not events:
+            return '<h1>今後の予定はありません</h1>'
+        
+        # イベント一覧の表示
+        output = '<h1>今後の予定</h1><ul>'
+        for event in events:
+            start = event['start'].get('dateTime', event['start'].get('date'))
+            summary = event.get('summary', '無題')
+            output += f'<li>{start} - {summary}</li>'
+        output += '</ul>'
+        
+        return output
+        
+    except Exception as e:
+        logger.error(f"Calendar retrieval failed: {e}")
+        return f"<h1>エラー</h1><p>カレンダー情報の取得に失敗しました。</p><a href='/'>戻る</a>"
+
+# エラーハンドラー
+@app.errorhandler(Exception)
+def handle_exception(e):
+    logger.error(f"Unhandled exception: {e}")
+    return "<h1>エラー</h1><p>内部サーバーエラーが発生しました。</p><a href='/'>戻る</a>", 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # 環境変数でデバッグモードを制御（本番環境では False）
+    debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+    port = int(os.getenv('PORT', 5000))
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
