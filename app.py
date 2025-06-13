@@ -34,7 +34,10 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
 # PostgreSQLへの接続
 def get_db_connection():
-    conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is not set or is empty. Please check Heroku Config Vars.")
+    conn = psycopg2.connect(database_url)
     conn.autocommit = True
     return conn
 
