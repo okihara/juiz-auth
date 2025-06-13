@@ -144,7 +144,12 @@ def oauth2callback():
     authorization_response = f"{scheme}://{host}{request.full_path}"
     print(f"Authorization Response URL: {authorization_response}")
     
-    flow.fetch_token(authorization_response=authorization_response)
+    try:
+        flow.fetch_token(authorization_response=authorization_response)
+    except Warning as w:
+        # OAuth scope warning を無視して続行
+        print(f"OAuth Warning (ignored): {w}")
+        pass
     
     # 認証情報の取得
     credentials = flow.credentials
@@ -210,7 +215,7 @@ def get_calendar():
         conn.close()
         return '認証情報がありません。<a href="/authorize">認証する</a>'
     
-    user_id, token_json = result
+    _, token_json = result
     credentials_dict = json.loads(token_json)
     
     # 認証情報の復元
@@ -230,7 +235,7 @@ def get_calendar():
     service = build('calendar', 'v3', credentials=credentials)
     
     # カレンダーイベントの取得
-    now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' は UTC
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()  # UTC timezone-aware
     events_result = service.events().list(
         calendarId='primary',
         timeMin=now,
