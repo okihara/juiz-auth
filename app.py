@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+import base64
 from flask import Flask, request, redirect, url_for, session, jsonify
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -84,11 +85,19 @@ def index():
     <h1>Google Calendar OAuth認証</h1>
     <p>リダイレクトURL: {redirect_url}</p>
     <a href="/authorize">Google Calendarと連携する</a>
+    <br><br>
+    <h2>ユーザーID指定で認証</h2>
+    <p>例: <a href="/authorize?uid=user123">UID指定で認証</a></p>
     '''
 
 # 認証開始
 @app.route('/authorize')
 def authorize():
+    # uidパラメータを取得
+    uid = request.args.get('uid')
+    if not uid:
+        return 'Error: uid parameter is required', 400
+    
     # OAuth2認証フローの作成
     flow = Flow.from_client_config(
         CLIENT_CONFIG,
@@ -103,8 +112,9 @@ def authorize():
         prompt='consent'
     )
     
-    # 状態をセッションに保存
+    # 状態とuidをセッションに保存
     session['state'] = state
+    session['uid'] = uid
     
     # ユーザーをGoogle認証ページにリダイレクト
     return redirect(authorization_url)
@@ -114,7 +124,9 @@ def authorize():
 def oauth2callback():
     # 状態の検証
     state = session.get('state')
-    if state is None:
+    uid = session.get('uid')
+    
+    if state is None or uid is None:
         return redirect(url_for('index'))
     
     # OAuth2認証フローの作成
@@ -144,9 +156,8 @@ def oauth2callback():
     
     
     # ユーザー情報の取得
-    # ユーザーIDを固定値にしておきます
-    # 本番環境では適切な方法でユーザーIDを取得する必要があります
-    user_id = "Ud4cc4c3b7e9ec9875f9951d1d0352a7a"  # デモ用に固定値を使用
+    # セッションからuidを取得してuser_idとして使用
+    user_id = uid
     
     # 認証情報をJSONに変換
     credentials_json = {
@@ -175,9 +186,10 @@ def oauth2callback():
     cursor.close()
     conn.close()
     
-    return '''
+    return f'''
     <h1>認証成功</h1>
     <p>Google Calendarとの連携が完了しました。</p>
+    <p><strong>ユーザーID:</strong> {user_id}</p>
     <a href="/calendar">カレンダー情報を表示</a>
     '''
 
