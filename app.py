@@ -31,7 +31,7 @@ CLIENT_CONFIG = {
 }
 
 # スコープの設定
-SCOPES = ['https://www.googleapis.com/auth/calendar']
+SCOPES = ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/calendar.readonly']
 
 # PostgreSQLへの接続
 def get_db_connection():
