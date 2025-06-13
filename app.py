@@ -144,20 +144,37 @@ def oauth2callback():
     authorization_response = f"{scheme}://{host}{request.full_path}"
     print(f"Authorization Response URL: {authorization_response}")
     
-    try:
-        flow.fetch_token(authorization_response=authorization_response)
-    except Warning as w:
-        # OAuth scope warning を無視して続行
-        print(f"OAuth Warning (ignored): {w}")
-        pass
+    # コードパラメータを確認
+    code = request.args.get('code')
+    if not code:
+        print("Error: No authorization code received")
+        return redirect(url_for('index'))
     
-    # 認証情報の取得
-    credentials = flow.credentials
-    print(f"Credentials obtained: {credentials.valid}")
-    print(f"Token: {credentials.token[:10]}...")
-    print(f"Has refresh token: {bool(credentials.refresh_token)}")
-    print(f"Scopes: {credentials.scopes}")
-    print(f"Expiry: {credentials.expiry}")
+    print(f"Authorization code received: {code[:10]}...")
+    
+    try:
+        # 明示的にコードパラメータを指定
+        flow.fetch_token(authorization_response=authorization_response)
+        
+        # 認証情報の取得
+        credentials = flow.credentials
+        
+        if not credentials or not hasattr(credentials, 'token') or not credentials.token:
+            print("Error: Failed to obtain valid credentials")
+            return redirect(url_for('index'))
+            
+        print(f"Credentials obtained: {credentials.valid}")
+        print(f"Token: {credentials.token[:10]}...")
+        print(f"Has refresh token: {bool(credentials.refresh_token)}")
+        print(f"Scopes: {credentials.scopes}")
+        print(f"Expiry: {credentials.expiry}")
+        
+    except Exception as e:
+        print(f"Error fetching token: {str(e)}")
+        # より詳細なデバッグ情報
+        print(f"Request args: {request.args}")
+        print(f"Session state: {session.get('state')}")
+        return f"認証エラーが発生しました: {str(e)}", 400
     
     
     # ユーザー情報の取得
